@@ -21,6 +21,7 @@ MARKETS = {
     "San Antonio": {"type": "tx_permit", "tx_county": "029", "population": 2_103_026},
     "Fort Worth":  {"type": "tx_permit", "tx_county": "220", "population": 2_182_431},
     "Los Angeles": {"type": "la_license",                    "population": 3_898_747},
+    "Seattle":     {"type": "seattle_license",               "population":   749_256},
 }
 
 
@@ -136,6 +137,33 @@ for item in records:
     ])
     if month:
         market_monthly["Los Angeles"][month] += 1
+print(f"  {len(records)} records.")
+
+# --- SEATTLE (Seattle Business Licenses, NAICS 454111 = Electronic Shopping 2022) ---
+# Note: Seattle uses 2022 NAICS vintage where 454110 was split into 454111/454112/454113
+# Date format is YYYYMMDD (no dashes) — converted to YYYY-MM for scorecard
+print("Fetching Seattle, WA...")
+url = (
+    "https://data.seattle.gov/resource/wnbq-64tb.json"
+    "?naics_code=454111"
+    f"&$where=license_start_date+>=+'{START_DATE.replace('-', '')}'"
+    "&$order=license_start_date+DESC"
+)
+records = fetch_paginated(url)
+for item in records:
+    d = item.get("license_start_date", "")
+    # Convert YYYYMMDD -> YYYY-MM-DD for consistency
+    date_fmt = f"{d[:4]}-{d[4:6]}-{d[6:8]}" if len(d) == 8 else d
+    month = f"{d[:4]}-{d[4:6]}" if len(d) == 8 else None
+    all_rows.append([
+        date_fmt,
+        item.get("business_legal_name", "N/A"),
+        "Seattle", "WA",
+        "454111 - Electronic Shopping",
+        "Seattle Business License"
+    ])
+    if month:
+        market_monthly["Seattle"][month] += 1
 print(f"  {len(records)} records.")
 
 # Write raw data (headers + all records)
