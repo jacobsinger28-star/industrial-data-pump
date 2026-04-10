@@ -1,5 +1,7 @@
 import os
 import json
+import csv
+import io
 import requests
 from datetime import date, timedelta
 from collections import defaultdict
@@ -233,4 +235,53 @@ scorecard_sheet.append_row([
 ])
 scorecard_sheet.append_rows(scorecard_rows)
 print(f"Scorecard written for {len(scorecard_rows)} markets.")
+
+
+# =============================================================================
+# BFS NATIONAL TREND — Census Bureau Business Formation Statistics
+# Source: https://www.census.gov/econ/bfs/csv/naics2.csv
+# Weekly business applications for NAICS 44-45 (Retail Trade, includes e-commerce)
+# National level only — serves as macro backdrop for market scorecard
+# =============================================================================
+print("\nFetching Census BFS national trend (NAICS 44-45)...")
+try:
+    bfs_sheet = get_or_create_sheet("BFS_National_Trend", rows=500, cols=5)
+
+    r = requests.get("https://www.census.gov/econ/bfs/csv/naics2.csv")
+    r.raise_for_status()
+
+    reader = csv.DictReader(io.StringIO(r.text))
+    retail_row = next((row for row in reader if row.get("naics2", "").strip() == "44-45"), None)
+
+    if retail_row:
+        # Extract all weekly columns from 2022 onward
+        weekly_data = [
+            (col, int(float(val)))
+            for col, val in retail_row.items()
+            if col.startswith("202") and "w" in col and val not in ("", "NA", None)
+        ]
+        weekly_data.sort(key=lambda x: x[0])  # sort chronologically
+
+        # Compute 4-week moving average
+        values = [v for _, v in weekly_data]
+        bfs_rows = []
+        for i, (week, apps) in enumerate(weekly_data):
+            ma4 = round(sum(values[max(0, i-3):i+1]) / min(i+1, 4), 1)
+            # Derive approximate date label from week code (e.g. 2024w03)
+            year, wnum = week.split("w")
+            bfs_rows.append([week, year, int(wnum), apps, ma4])
+
+        bfs_sheet.append_row([
+            "Week Code", "Year", "Week #",
+            "NAICS 44-45 Applications (Retail incl. E-comm)",
+            "4-Week Moving Avg"
+        ])
+        bfs_sheet.append_rows(bfs_rows)
+        print(f"  {len(bfs_rows)} weekly data points written.")
+    else:
+        print("  Could not find NAICS 44-45 row in BFS CSV.")
+
+except Exception as e:
+    print(f"  BFS fetch error: {e}")
+
 print(f"\nRun complete — {date.today()}")
