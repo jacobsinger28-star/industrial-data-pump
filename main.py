@@ -284,4 +284,94 @@ try:
 except Exception as e:
     print(f"  BFS fetch error: {e}")
 
+# =============================================================================
+# STATE FORMATION TRENDS — Census BFS State-Level Weekly Data
+# Source: https://www.census.gov/econ/bfs/csv/bfs_state_apps_weekly_nsa.csv
+# All industries, all 50 states + DC, weekly since 2006
+# Tab shows annual totals + recent 4-week avg per state (one row per state)
+# =============================================================================
+print("\nFetching Census BFS state-level formation data...")
+try:
+    state_sheet = get_or_create_sheet("State_Formation_Trends", rows=60, cols=10)
+
+    r = requests.get("https://www.census.gov/econ/bfs/csv/bfs_state_apps_weekly_nsa.csv")
+    r.raise_for_status()
+
+    # Parse CSV into per-state annual buckets
+    # state_data[state][year] = list of weekly BA_NSA values
+    state_data = defaultdict(lambda: defaultdict(list))
+    recent_weeks = []  # collect (year, week, state, ba) for last 4 weeks
+
+    reader = csv.DictReader(io.StringIO(r.text))
+    all_rows_state = list(reader)
+
+    # Find max year+week for "recent 4 weeks" window
+    max_year = max(int(row["Year"]) for row in all_rows_state)
+    max_week = max(int(row["Week"]) for row in all_rows_state if int(row["Year"]) == max_year)
+
+    for row in all_rows_state:
+        year = int(row["Year"])
+        week = int(row["Week"])
+        state = row["State"].strip()
+        ba = row["BA_NSA"].strip()
+        hba = row["HBA_NSA"].strip()
+        if not ba or ba in (".", "NA"):
+            continue
+        state_data[state][year].append(int(float(ba)))
+        # Track last 4 weeks
+        if year == max_year and week > max_week - 4:
+            recent_weeks.append((state, int(float(ba)), int(float(hba)) if hba not in ("", ".", "NA") else 0))
+
+    # Recent 4-week avg per state
+    recent_ba  = defaultdict(list)
+    recent_hba = defaultdict(list)
+    for state, ba, hba in recent_weeks:
+        recent_ba[state].append(ba)
+        recent_hba[state].append(hba)
+
+    # Build summary rows
+    summary_rows = []
+    for state in sorted(state_data.keys()):
+        yearly = state_data[state]
+        def annual_total(yr):
+            return sum(yearly.get(yr, [])) if yearly.get(yr) else "N/A"
+
+        total_2022 = annual_total(2022)
+        total_2023 = annual_total(2023)
+        total_2024 = annual_total(2024)
+
+        # YoY growth 2023→2024
+        if isinstance(total_2023, int) and isinstance(total_2024, int) and total_2023 > 0:
+            yoy = f"{round(((total_2024 - total_2023) / total_2023) * 100, 1)}%"
+        else:
+            yoy = "N/A"
+
+        # Recent 4-week avg
+        r4_ba  = round(sum(recent_ba[state])  / len(recent_ba[state]),  1) if recent_ba[state]  else "N/A"
+        r4_hba = round(sum(recent_hba[state]) / len(recent_hba[state]), 1) if recent_hba[state] else "N/A"
+
+        summary_rows.append([
+            state,
+            total_2022, total_2023, total_2024,
+            yoy,
+            r4_ba, r4_hba,
+            f"Week {max_week}, {max_year}"
+        ])
+
+    # Sort by 2024 total descending (highest formation states first)
+    summary_rows.sort(key=lambda x: x[3] if isinstance(x[3], int) else 0, reverse=True)
+
+    state_sheet.append_row([
+        "State",
+        "2022 Total Apps", "2023 Total Apps", "2024 Total Apps",
+        "YoY Growth (2023→2024)",
+        "Recent 4-Wk Avg (All Apps)", "Recent 4-Wk Avg (High-Propensity)",
+        "Data Through"
+    ])
+    state_sheet.append_rows(summary_rows)
+    print(f"  State formation trends written for {len(summary_rows)} states.")
+
+except Exception as e:
+    print(f"  State trends error: {e}")
+
 print(f"\nRun complete — {date.today()}")
