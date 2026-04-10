@@ -292,80 +292,133 @@ except Exception as e:
 # =============================================================================
 print("\nFetching Census BFS state-level formation data...")
 try:
-    state_sheet = get_or_create_sheet("State_Formation_Trends", rows=60, cols=10)
+    state_sheet = get_or_create_sheet("State_Formation_Trends", rows=60, cols=14)
 
-    r = requests.get("https://www.census.gov/econ/bfs/csv/bfs_state_apps_weekly_nsa.csv")
-    r.raise_for_status()
+    # --- Fetch 2023 state populations from Census PEP API ---
+    # Maps full state name -> population (no API key required)
+    STATE_NAME_TO_ABBR = {
+        "Alabama": "AL", "Alaska": "AK", "Arizona": "AZ", "Arkansas": "AR",
+        "California": "CA", "Colorado": "CO", "Connecticut": "CT", "Delaware": "DE",
+        "District of Columbia": "DC", "Florida": "FL", "Georgia": "GA", "Hawaii": "HI",
+        "Idaho": "ID", "Illinois": "IL", "Indiana": "IN", "Iowa": "IA",
+        "Kansas": "KS", "Kentucky": "KY", "Louisiana": "LA", "Maine": "ME",
+        "Maryland": "MD", "Massachusetts": "MA", "Michigan": "MI", "Minnesota": "MN",
+        "Mississippi": "MS", "Missouri": "MO", "Montana": "MT", "Nebraska": "NE",
+        "Nevada": "NV", "New Hampshire": "NH", "New Jersey": "NJ", "New Mexico": "NM",
+        "New York": "NY", "North Carolina": "NC", "North Dakota": "ND", "Ohio": "OH",
+        "Oklahoma": "OK", "Oregon": "OR", "Pennsylvania": "PA", "Rhode Island": "RI",
+        "South Carolina": "SC", "South Dakota": "SD", "Tennessee": "TN", "Texas": "TX",
+        "Utah": "UT", "Vermont": "VT", "Virginia": "VA", "Washington": "WA",
+        "West Virginia": "WV", "Wisconsin": "WI", "Wyoming": "WY",
+        "Puerto Rico": "PR",
+    }
 
-    # Parse CSV into per-state annual buckets
-    # state_data[state][year] = list of weekly BA_NSA values
+    pop_by_abbr = {}
+    pop_r = requests.get(
+        "https://api.census.gov/data/2023/pep/charv?get=NAME,POP&YEAR=2023&for=state:*"
+    )
+    if pop_r.status_code == 200:
+        pop_data = pop_r.json()
+        headers = pop_data[0]
+        name_idx = headers.index("NAME")
+        pop_idx  = headers.index("POP")
+        for row in pop_data[1:]:
+            name = row[name_idx]
+            abbr = STATE_NAME_TO_ABBR.get(name)
+            if abbr:
+                pop_by_abbr[abbr] = int(row[pop_idx])
+        print(f"  Loaded population for {len(pop_by_abbr)} states.")
+    else:
+        print(f"  Population API error {pop_r.status_code} — per-capita will be N/A.")
+
+    # --- Parse BFS state weekly CSV ---
     state_data = defaultdict(lambda: defaultdict(list))
-    recent_weeks = []  # collect (year, week, state, ba) for last 4 weeks
+    recent_weeks = []
 
-    reader = csv.DictReader(io.StringIO(r.text))
+    bfs_r = requests.get("https://www.census.gov/econ/bfs/csv/bfs_state_apps_weekly_nsa.csv")
+    bfs_r.raise_for_status()
+
+    reader = csv.DictReader(io.StringIO(bfs_r.text))
     all_rows_state = list(reader)
 
-    # Find max year+week for "recent 4 weeks" window
     max_year = max(int(row["Year"]) for row in all_rows_state)
     max_week = max(int(row["Week"]) for row in all_rows_state if int(row["Year"]) == max_year)
 
     for row in all_rows_state:
-        year = int(row["Year"])
-        week = int(row["Week"])
+        year  = int(row["Year"])
+        week  = int(row["Week"])
         state = row["State"].strip()
-        ba = row["BA_NSA"].strip()
-        hba = row["HBA_NSA"].strip()
+        ba    = row["BA_NSA"].strip()
+        hba   = row["HBA_NSA"].strip()
         if not ba or ba in (".", "NA"):
             continue
         state_data[state][year].append(int(float(ba)))
-        # Track last 4 weeks
         if year == max_year and week > max_week - 4:
-            recent_weeks.append((state, int(float(ba)), int(float(hba)) if hba not in ("", ".", "NA") else 0))
+            recent_weeks.append((
+                state,
+                int(float(ba)),
+                int(float(hba)) if hba not in ("", ".", "NA") else 0
+            ))
 
-    # Recent 4-week avg per state
     recent_ba  = defaultdict(list)
     recent_hba = defaultdict(list)
     for state, ba, hba in recent_weeks:
         recent_ba[state].append(ba)
         recent_hba[state].append(hba)
 
-    # Build summary rows
+    def per_100k(value, pop):
+        if isinstance(value, int) and pop:
+            return round((value / pop) * 100_000, 1)
+        return "N/A"
+
+    # --- Build summary rows ---
     summary_rows = []
     for state in sorted(state_data.keys()):
         yearly = state_data[state]
+        pop = pop_by_abbr.get(state)
+
         def annual_total(yr):
             return sum(yearly.get(yr, [])) if yearly.get(yr) else "N/A"
 
-        total_2022 = annual_total(2022)
-        total_2023 = annual_total(2023)
-        total_2024 = annual_total(2024)
+        t2022 = annual_total(2022)
+        t2023 = annual_total(2023)
+        t2024 = annual_total(2024)
 
-        # YoY growth 2023→2024
-        if isinstance(total_2023, int) and isinstance(total_2024, int) and total_2023 > 0:
-            yoy = f"{round(((total_2024 - total_2023) / total_2023) * 100, 1)}%"
-        else:
-            yoy = "N/A"
+        yoy = (
+            f"{round(((t2024 - t2023) / t2023) * 100, 1)}%"
+            if isinstance(t2023, int) and isinstance(t2024, int) and t2023 > 0
+            else "N/A"
+        )
 
-        # Recent 4-week avg
         r4_ba  = round(sum(recent_ba[state])  / len(recent_ba[state]),  1) if recent_ba[state]  else "N/A"
         r4_hba = round(sum(recent_hba[state]) / len(recent_hba[state]), 1) if recent_hba[state] else "N/A"
 
         summary_rows.append([
             state,
-            total_2022, total_2023, total_2024,
+            f"{pop:,}" if pop else "N/A",
+            t2022, per_100k(t2022, pop),
+            t2023, per_100k(t2023, pop),
+            t2024, per_100k(t2024, pop),
             yoy,
-            r4_ba, r4_hba,
+            r4_ba,  per_100k(round(r4_ba  * 52, 0) if isinstance(r4_ba,  float) else "N/A", pop),
+            r4_hba, per_100k(round(r4_hba * 52, 0) if isinstance(r4_hba, float) else "N/A", pop),
             f"Week {max_week}, {max_year}"
         ])
 
-    # Sort by 2024 total descending (highest formation states first)
-    summary_rows.sort(key=lambda x: x[3] if isinstance(x[3], int) else 0, reverse=True)
+    # Sort by 2024 per-100k (demand density) descending
+    summary_rows.sort(
+        key=lambda x: x[7] if isinstance(x[7], float) else 0,
+        reverse=True
+    )
 
     state_sheet.append_row([
-        "State",
-        "2022 Total Apps", "2023 Total Apps", "2024 Total Apps",
+        "State", "Population (2023)",
+        "2022 Total Apps", "2022 Per 100k",
+        "2023 Total Apps", "2023 Per 100k",
+        "2024 Total Apps", "2024 Per 100k",
         "YoY Growth (2023→2024)",
-        "Recent 4-Wk Avg (All Apps)", "Recent 4-Wk Avg (High-Propensity)",
+        "Recent 4-Wk Avg (Apps)", "Annualised Per 100k",
+        "Recent 4-Wk Avg (High-Propensity)", "Annualised HPA Per 100k",
         "Data Through"
     ])
     state_sheet.append_rows(summary_rows)
