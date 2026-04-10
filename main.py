@@ -96,7 +96,7 @@ else:
 print("Fetching Chicago, IL...")
 url = (
     "https://data.cityofchicago.org/resource/uupf-x98q.json"
-    "&$order=date_issued+DESC&$limit=20"
+    "?$order=date_issued+DESC&$limit=20"
 )
 r = requests.get(url)
 if r.status_code == 200:
@@ -148,6 +148,64 @@ for zip_code in DENVER_ZIPS:
     else:
         print(f"  ERROR {r.status_code} for zip {zip_code}")
 print(f"  {denver_count} records.")
+
+# =============================================================================
+# SOURCE 5: CINCINNATI — City of Cincinnati Business Licenses
+# API: data.cincinnati-oh.gov/resource/7dk3-gngs.json
+# Note: No NAICS codes — uses internal revenue codes.
+# Fields: entrydate, business_name, loczip
+# =============================================================================
+print("Fetching Cincinnati, OH...")
+url = (
+    "https://data.cincinnati-oh.gov/resource/7dk3-gngs.json"
+    "?$order=entrydate+DESC&$limit=20"
+)
+r = requests.get(url)
+if r.status_code == 200:
+    records = r.json()
+    for item in records:
+        all_rows.append([
+            item.get('entrydate', 'N/A'),
+            item.get('business_name', 'N/A'),
+            "Cincinnati", "OH",
+            item.get('revenue_code', 'N/A'),
+            "Cincinnati Business License"
+        ])
+    print(f"  {len(records)} records.")
+else:
+    print(f"  ERROR {r.status_code}: {r.text}")
+
+# =============================================================================
+# SOURCE 6: PHILADELPHIA — City of Philadelphia Business Licenses
+# API: phl.carto.com (Carto SQL API)
+# Note: No NAICS codes — uses licensetype strings.
+# Fields: initialissuedate, business_name, zip, licensetype
+# =============================================================================
+print("Fetching Philadelphia, PA...")
+url = (
+    "https://phl.carto.com/api/v2/sql"
+    "?q=SELECT+business_name,initialissuedate,zip,licensetype"
+    "+FROM+li_business_licenses"
+    "+WHERE+licensestatus='Active'"
+    "+AND+licensetype+NOT+LIKE+'Rental%'"
+    "+ORDER+BY+initialissuedate+DESC"
+    "+LIMIT+20"
+    "&format=json"
+)
+r = requests.get(url)
+if r.status_code == 200:
+    data = r.json()
+    for item in data.get('rows', []):
+        all_rows.append([
+            item.get('initialissuedate', 'N/A'),
+            item.get('business_name', 'N/A'),
+            "Philadelphia", "PA",
+            item.get('licensetype', 'N/A'),
+            "Philadelphia Business License"
+        ])
+    print(f"  {len(data.get('rows', []))} records.")
+else:
+    print(f"  ERROR {r.status_code}: {r.text}")
 
 # =============================================================================
 # WRITE TO SHEET
