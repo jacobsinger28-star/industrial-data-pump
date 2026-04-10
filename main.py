@@ -14,7 +14,10 @@ try:
     creds = Credentials.from_service_account_info(service_account_info, scopes=scopes)
     gc = gspread.Client(auth=creds)
     spreadsheet = gc.open("Top 50 MSA Industrial Tracker")
-    sheet = spreadsheet.worksheet("Raw_Registrations")
+    try:
+        sheet = spreadsheet.worksheet("Raw_Registrations")
+    except gspread.exceptions.WorksheetNotFound:
+        sheet = spreadsheet.add_worksheet(title="Raw_Registrations", rows=1000, cols=10)
     print("Connected to Google Sheets.")
 except Exception as e:
     print(f"Error connecting to Google Sheets: {e}")
