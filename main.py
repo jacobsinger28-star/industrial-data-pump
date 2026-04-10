@@ -332,8 +332,9 @@ try:
         print(f"  Population API error {pop_r.status_code} — per-capita will be N/A.")
 
     # --- Parse BFS state weekly CSV ---
-    state_data = defaultdict(lambda: defaultdict(list))
-    recent_weeks = []
+    state_data    = defaultdict(lambda: defaultdict(list))
+    early_wk_data = defaultdict(lambda: defaultdict(int))  # state -> year -> sum of weeks 1-12
+    recent_weeks  = []
 
     bfs_r = requests.get("https://www.census.gov/econ/bfs/csv/bfs_state_apps_weekly_nsa.csv")
     bfs_r.raise_for_status()
@@ -352,11 +353,13 @@ try:
         hba   = row["HBA_NSA"].strip()
         if not ba or ba in (".", "NA"):
             continue
-        state_data[state][year].append(int(float(ba)))
+        ba_val = int(float(ba))
+        state_data[state][year].append(ba_val)
+        if week <= 12:
+            early_wk_data[state][year] += ba_val
         if year == max_year and week > max_week - 4:
             recent_weeks.append((
-                state,
-                int(float(ba)),
+                state, ba_val,
                 int(float(hba)) if hba not in ("", ".", "NA") else 0
             ))
 
@@ -385,14 +388,21 @@ try:
 
         year_totals = {yr: annual_total(yr) for yr in all_years}
 
-        # YoY growth: two most recent complete years
-        complete_years = [yr for yr in all_years if isinstance(year_totals[yr], int)]
-        if len(complete_years) >= 2:
-            prev, curr = complete_years[-2], complete_years[-1]
-            t_prev, t_curr = year_totals[prev], year_totals[curr]
-            yoy = f"{round(((t_curr - t_prev) / t_prev) * 100, 1)}% ({prev}→{curr})"
+        # YoY growth: fixed 2024 vs 2025
+        t2024 = year_totals.get(2024, "N/A")
+        t2025 = year_totals.get(2025, "N/A")
+        if isinstance(t2024, int) and isinstance(t2025, int) and t2024 > 0:
+            yoy = f"{round(((t2025 - t2024) / t2024) * 100, 1)}%"
         else:
             yoy = "N/A"
+
+        # Weeks 1-12 comparison: 2025 vs 2026
+        w12_2025 = early_wk_data[state].get(2025) or "N/A"
+        w12_2026 = early_wk_data[state].get(2026) or "N/A"
+        if isinstance(w12_2025, int) and isinstance(w12_2026, int) and w12_2025 > 0:
+            w12_chg = f"{round(((w12_2026 - w12_2025) / w12_2025) * 100, 1)}%"
+        else:
+            w12_chg = "N/A"
 
         r4_ba  = round(sum(recent_ba[state])  / len(recent_ba[state]),  1) if recent_ba[state]  else "N/A"
         r4_hba = round(sum(recent_hba[state]) / len(recent_hba[state]), 1) if recent_hba[state] else "N/A"
@@ -403,6 +413,9 @@ try:
             row += [t, per_100k(t, pop)]
         row += [
             yoy,
+            w12_2025, per_100k(w12_2025, pop),
+            w12_2026, per_100k(w12_2026, pop),
+            w12_chg,
             r4_ba,  per_100k(round(r4_ba  * 52) if isinstance(r4_ba,  float) else "N/A", pop),
             r4_hba, per_100k(round(r4_hba * 52) if isinstance(r4_hba, float) else "N/A", pop),
             f"Week {max_week}, {max_year}"
@@ -420,7 +433,10 @@ try:
     for yr in all_years:
         header += [f"{yr} Total Apps", f"{yr} Per 100k"]
     header += [
-        "YoY Growth",
+        "YoY Growth (2024→2025)",
+        "Wks 1-12 2025 Apps", "Wks 1-12 2025 Per 100k",
+        "Wks 1-12 2026 Apps", "Wks 1-12 2026 Per 100k",
+        "Wks 1-12 Change (2025→2026)",
         "Recent 4-Wk Avg (Apps)", "Annualised Per 100k",
         "Recent 4-Wk Avg (High-Propensity)", "Annualised HPA Per 100k",
         "Data Through"
