@@ -292,7 +292,7 @@ except Exception as e:
 # =============================================================================
 print("\nFetching Census BFS state-level formation data...")
 try:
-    state_sheet = get_or_create_sheet("State_Formation_Trends", rows=60, cols=14)
+    state_sheet = get_or_create_sheet("State_Formation_Trends", rows=60, cols=30)
 
     # --- Fetch 2023 state populations from Census PEP API ---
     # Maps full state name -> population (no API key required)
@@ -371,6 +371,9 @@ try:
             return round((value / pop) * 100_000, 1)
         return "N/A"
 
+    # Detect all years present in the data (dynamic — no hardcoding)
+    all_years = sorted({int(row["Year"]) for row in all_rows_state})
+
     # --- Build summary rows ---
     summary_rows = []
     for state in sorted(state_data.keys()):
@@ -380,49 +383,52 @@ try:
         def annual_total(yr):
             return sum(yearly.get(yr, [])) if yearly.get(yr) else "N/A"
 
-        t2022 = annual_total(2022)
-        t2023 = annual_total(2023)
-        t2024 = annual_total(2024)
+        year_totals = {yr: annual_total(yr) for yr in all_years}
 
-        yoy = (
-            f"{round(((t2024 - t2023) / t2023) * 100, 1)}%"
-            if isinstance(t2023, int) and isinstance(t2024, int) and t2023 > 0
-            else "N/A"
-        )
+        # YoY growth: two most recent complete years
+        complete_years = [yr for yr in all_years if isinstance(year_totals[yr], int)]
+        if len(complete_years) >= 2:
+            prev, curr = complete_years[-2], complete_years[-1]
+            t_prev, t_curr = year_totals[prev], year_totals[curr]
+            yoy = f"{round(((t_curr - t_prev) / t_prev) * 100, 1)}% ({prev}→{curr})"
+        else:
+            yoy = "N/A"
 
         r4_ba  = round(sum(recent_ba[state])  / len(recent_ba[state]),  1) if recent_ba[state]  else "N/A"
         r4_hba = round(sum(recent_hba[state]) / len(recent_hba[state]), 1) if recent_hba[state] else "N/A"
 
-        summary_rows.append([
-            state,
-            f"{pop:,}" if pop else "N/A",
-            t2022, per_100k(t2022, pop),
-            t2023, per_100k(t2023, pop),
-            t2024, per_100k(t2024, pop),
+        row = [state, f"{pop:,}" if pop else "N/A"]
+        for yr in all_years:
+            t = year_totals[yr]
+            row += [t, per_100k(t, pop)]
+        row += [
             yoy,
-            r4_ba,  per_100k(round(r4_ba  * 52, 0) if isinstance(r4_ba,  float) else "N/A", pop),
-            r4_hba, per_100k(round(r4_hba * 52, 0) if isinstance(r4_hba, float) else "N/A", pop),
+            r4_ba,  per_100k(round(r4_ba  * 52) if isinstance(r4_ba,  float) else "N/A", pop),
+            r4_hba, per_100k(round(r4_hba * 52) if isinstance(r4_hba, float) else "N/A", pop),
             f"Week {max_week}, {max_year}"
-        ])
+        ]
+        summary_rows.append(row)
 
-    # Sort by 2024 per-100k (demand density) descending
+    # Sort by most recent full year per-100k descending
+    most_recent_per100k_idx = 2 + (len(all_years) - 1) * 2 + 1  # index of last year's per-100k col
     summary_rows.sort(
-        key=lambda x: x[7] if isinstance(x[7], float) else 0,
+        key=lambda x: x[most_recent_per100k_idx] if isinstance(x[most_recent_per100k_idx], float) else 0,
         reverse=True
     )
 
-    state_sheet.append_row([
-        "State", "Population (2023)",
-        "2022 Total Apps", "2022 Per 100k",
-        "2023 Total Apps", "2023 Per 100k",
-        "2024 Total Apps", "2024 Per 100k",
-        "YoY Growth (2023→2024)",
+    header = ["State", "Population (2023)"]
+    for yr in all_years:
+        header += [f"{yr} Total Apps", f"{yr} Per 100k"]
+    header += [
+        "YoY Growth",
         "Recent 4-Wk Avg (Apps)", "Annualised Per 100k",
         "Recent 4-Wk Avg (High-Propensity)", "Annualised HPA Per 100k",
         "Data Through"
-    ])
+    ]
+
+    state_sheet.append_row(header)
     state_sheet.append_rows(summary_rows)
-    print(f"  State formation trends written for {len(summary_rows)} states.")
+    print(f"  State formation trends written for {len(summary_rows)} states ({min(all_years)}–{max_year}).")
 
 except Exception as e:
     print(f"  State trends error: {e}")
