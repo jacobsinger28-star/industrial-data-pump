@@ -545,4 +545,145 @@ try:
 except Exception as e:
     print(f"  National historical error: {e}")
 
+# =============================================================================
+# METRO FORMATION TRENDS — Census BFS County Annual Data aggregated to MSAs
+# Source: https://www.census.gov/econ/bfs/xlsx/bfs_county_apps_annual.xlsx
+# Annual data 2005–2024 (2025 county data released ~mid-2026 by Census)
+# Counties aggregated to MSAs; ranked by 2024 total applications
+# =============================================================================
+print("\nBuilding Metro_Formation_Trends tab...")
+try:
+    import pandas as pd
+    import io as _io
+
+    metro_sheet = get_or_create_sheet("Metro_Formation_Trends", rows=60, cols=35)
+
+    # MSA definitions: MSA name -> list of 5-digit county FIPS codes (state+county)
+    METRO_COUNTIES = {
+        "New York–Newark":      ["36061","36047","36081","36005","36085","36059","36103",
+                                  "36119","34003","34017","34031","34013","34039"],
+        "Los Angeles–Long Beach":["06037","06059","06065","06071","06111"],
+        "Chicago–Naperville":   ["17031","17043","17097","17197","17089","17111"],
+        "Dallas–Fort Worth":    ["48113","48439","48085","48121","48139","48231","48397"],
+        "Houston–Woodlands":    ["48201","48157","48339","48039","48167","48071","48291"],
+        "Washington DC":        ["11001","24031","24033","51059","51013","51107","51153",
+                                  "51510","51600","51610","24017","24021"],
+        "Miami–Fort Lauderdale":["12086","12011","12099"],
+        "Philadelphia":         ["42101","42091","42045","42017","42029","34005","34007","34015"],
+        "Atlanta":              ["13121","13089","13135","13067","13063","13247","13151",
+                                  "13077","13097","13113","13117","13143","13149","13159","13171"],
+        "Phoenix–Mesa":         ["04013","04021"],
+        "Boston":               ["25025","25017","25009","25021","25023","33015","33017"],
+        "Riverside–San Bern.":  ["06065","06071"],
+        "Seattle–Tacoma":       ["53033","53061","53053"],
+        "Minneapolis–St. Paul": ["27053","27123","27037","27003","27019","27139","27163",
+                                  "55093","55109"],
+        "San Diego":            ["06073"],
+        "Tampa–St. Pete":       ["12057","12103","12101","12105"],
+        "Denver–Aurora":        ["08031","08005","08059","08001","08035","08014","08047"],
+        "St. Louis":            ["29189","29510","29183","17163","17117","17119","17133"],
+        "Baltimore":            ["24005","24510","24003","24013","24025","24027","51013"],
+        "Orlando–Kissimmee":    ["12095","12097","12117","12069"],
+        "Charlotte":            ["37119","37179","37025","37097","37057"],
+        "San Antonio":          ["48029","48091","48187","48259","48325","48493"],
+        "Portland–Vancouver":   ["41051","41067","41005","53011"],
+        "Sacramento":           ["06067","06017","06061","06113"],
+        "Pittsburgh":           ["42003","42005","42007","42019","42125","42129"],
+        "Austin–Round Rock":    ["48453","48491","48209","48055","48021"],
+        "Las Vegas":            ["32003"],
+        "Cincinnati":           ["39061","39165","39025","39017","21037","21077","21117"],
+        "Kansas City":          ["29095","29165","29037","29047","29107","20091","20209"],
+        "Columbus OH":          ["39049","39041","39045","39089","39129","39127"],
+        "Indianapolis":         ["18097","18059","18011","18063","18081","18145","18057"],
+        "Cleveland":            ["39035","39093","39055","39085","39103"],
+        "Nashville":            ["47037","47187","47149","47189","47021","47111","47141",
+                                  "47015","47043","47165","47147"],
+        "San Jose":             ["06085"],
+        "San Francisco–Oakland":["06075","06081","06001","06013","06041"],
+        "Jacksonville FL":      ["12031","12109","12019","12003","13069"],
+        "Memphis":              ["47157","05069","28033","28137"],
+        "Richmond VA":          ["51087","51041","51145","51760"],
+        "Oklahoma City":        ["40109","40017","40027","40083","40125","40051"],
+        "Raleigh–Durham":       ["37183","37063","37101","37135","37069"],
+        "Hartford CT":          ["09003","09013"],
+        "Birmingham AL":        ["01073","01009","01115","01121","01125","01117"],
+        "New Orleans":          ["22071","22051","22089","22093","22095","22103"],
+        "Buffalo NY":           ["36029","36063"],
+        "Salt Lake City":       ["49035","49011","49057","49045"],
+        "Louisville":           ["21111","21029","21163","21211","18019","18043"],
+    }
+
+    # Fetch county data
+    bfs_county_r = requests.get(
+        "https://www.census.gov/econ/bfs/xlsx/bfs_county_apps_annual.xlsx", timeout=30
+    )
+    bfs_county_r.raise_for_status()
+    df_county = pd.read_excel(
+        _io.BytesIO(bfs_county_r.content),
+        sheet_name="County Data",
+        header=1,
+        skiprows=1
+    )
+
+    # Normalize county code to 5-digit string
+    df_county["fips5"] = df_county["County Code"].astype(str).str.zfill(5)
+
+    # BA year columns
+    ba_cols = [c for c in df_county.columns if str(c).startswith("BA")]
+    ba_years = [int(c[2:]) for c in ba_cols]   # e.g. [2005, 2006, ..., 2024]
+
+    # Convert to numeric, coerce suppressed/missing to NaN
+    for col in ba_cols:
+        df_county[col] = pd.to_numeric(df_county[col], errors="coerce")
+
+    # Build metro aggregates
+    metro_rows = []
+    for msa, fips_list in METRO_COUNTIES.items():
+        sub = df_county[df_county["fips5"].isin(fips_list)]
+        county_count = len(sub)
+        if sub.empty:
+            continue
+        yearly_totals = {}
+        for col, yr in zip(ba_cols, ba_years):
+            s = sub[col].sum()
+            yearly_totals[yr] = int(s) if not pd.isna(s) else "N/A"
+
+        t2022 = yearly_totals.get(2022, "N/A")
+        t2023 = yearly_totals.get(2023, "N/A")
+        t2024 = yearly_totals.get(2024, "N/A")
+
+        # 2023 vs 2022
+        if isinstance(t2023, int) and isinstance(t2022, int) and t2022 > 0:
+            yoy_23 = f"{round(((t2023 - t2022) / t2022) * 100, 1)}%"
+        else:
+            yoy_23 = "N/A"
+        # 2024 vs 2023
+        if isinstance(t2024, int) and isinstance(t2023, int) and t2023 > 0:
+            yoy_24 = f"{round(((t2024 - t2023) / t2023) * 100, 1)}%"
+        else:
+            yoy_24 = "N/A"
+
+        row = [msa, county_count]
+        for yr in ba_years:
+            row.append(yearly_totals.get(yr, "N/A"))
+        row += [yoy_23, yoy_24, t2024, "2024"]
+        metro_rows.append(row)
+
+    # Sort by 2024 total (index = 2 + len(ba_years) - 1 = last BA col index)
+    last_ba_idx = 1 + len(ba_years)  # 0=MSA, 1=counties, then ba years
+    metro_rows.sort(key=lambda x: x[last_ba_idx] if isinstance(x[last_ba_idx], int) else 0, reverse=True)
+
+    header_metro = ["Metro (MSA)", "# Counties"] + [str(yr) for yr in ba_years]
+    header_metro += ["YoY 2022→2023", "YoY 2023→2024", "2024 Total", "Data Through"]
+
+    metro_sheet.append_row(["*Annual BFS county data — 2025 county file expected ~mid-2026. "
+                             "State-level 2025/2026 data available in State_Formation_Trends tab."])
+    metro_sheet.append_row(header_metro)
+    metro_sheet.append_rows(metro_rows)
+    print(f"  Metro formation trends written for {len(metro_rows)} MSAs ({min(ba_years)}–{max(ba_years)}).")
+
+except Exception as e:
+    print(f"  Metro trends error: {e}")
+
+
 print(f"\nRun complete — {date.today()}")
