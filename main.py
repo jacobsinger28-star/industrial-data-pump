@@ -244,30 +244,27 @@ print(f"Scorecard written for {len(scorecard_rows)} markets.")
 # National level only — serves as macro backdrop for market scorecard
 # =============================================================================
 print("\nFetching Census BFS national trend (NAICS 44-45)...")
+naics2_rows = []  # cache for reuse in National_Historical tab
 try:
     bfs_sheet = get_or_create_sheet("BFS_National_Trend", rows=500, cols=5)
 
     r = requests.get("https://www.census.gov/econ/bfs/csv/naics2.csv")
     r.raise_for_status()
+    naics2_rows = list(csv.DictReader(io.StringIO(r.text)))
 
-    reader = csv.DictReader(io.StringIO(r.text))
-    retail_row = next((row for row in reader if row.get("naics2", "").strip() == "44-45"), None)
+    retail_row = next((row for row in naics2_rows if row.get("naics2", "").strip() == "44-45"), None)
 
     if retail_row:
-        # Extract all weekly columns from 2022 onward
         weekly_data = [
             (col, int(float(val)))
             for col, val in retail_row.items()
             if col.startswith("202") and "w" in col and val not in ("", "NA", None)
         ]
-        weekly_data.sort(key=lambda x: x[0])  # sort chronologically
-
-        # Compute 4-week moving average
+        weekly_data.sort(key=lambda x: x[0])
         values = [v for _, v in weekly_data]
         bfs_rows = []
         for i, (week, apps) in enumerate(weekly_data):
             ma4 = round(sum(values[max(0, i-3):i+1]) / min(i+1, 4), 1)
-            # Derive approximate date label from week code (e.g. 2024w03)
             year, wnum = week.split("w")
             bfs_rows.append([week, year, int(wnum), apps, ma4])
 
@@ -448,5 +445,104 @@ try:
 
 except Exception as e:
     print(f"  State trends error: {e}")
+
+# =============================================================================
+# NATIONAL HISTORICAL — Annual business application totals since 2006
+#
+# Total BA + HBA: summed from bfs_state_apps_weekly_nsa.csv across all states
+#   (already loaded above — no extra API call needed)
+# Retail BA (NAICS 44-45): summed from naics2.csv (closest BFS proxy for e-comm)
+#   NOTE: No NAICS 454 (nonstore retail) available in BFS national files.
+#         NAICS 44-45 includes ALL retail — physical stores + e-commerce combined.
+# =============================================================================
+print("\nBuilding National_Historical tab...")
+try:
+    hist_sheet = get_or_create_sheet("National_Historical", rows=30, cols=10)
+
+    # --- Total BA + HBA by year: sum all states from state CSV ---
+    nat_ba  = defaultdict(int)   # year -> total BA
+    nat_hba = defaultdict(int)   # year -> total HBA
+
+    for row in all_rows_state:
+        yr  = int(row["Year"])
+        ba  = row["BA_NSA"].strip()
+        hba = row["HBA_NSA"].strip()
+        if ba  and ba  not in (".", "NA"):
+            nat_ba[yr]  += int(float(ba))
+        if hba and hba not in (".", "NA"):
+            nat_hba[yr] += int(float(hba))
+
+    # --- Retail BA (NAICS 44-45) by year: sum all weeks from naics2.csv ---
+    nat_retail_ba = defaultdict(int)  # year -> retail BA
+
+    if naics2_rows:
+        retail_row = next(
+            (row for row in naics2_rows if row.get("naics2", "").strip() == "44-45"),
+            None
+        )
+        if retail_row:
+            for col, val in retail_row.items():
+                if "w" in col and val not in ("", "NA", None):
+                    try:
+                        yr = int(col.split("w")[0])
+                        nat_retail_ba[yr] += int(float(val))
+                    except (ValueError, IndexError):
+                        pass
+
+    # --- Build annual summary rows ---
+    all_hist_years = sorted(set(nat_ba.keys()) | set(nat_hba.keys()))
+
+    hist_rows = []
+    for i, yr in enumerate(all_hist_years):
+        ba       = nat_ba.get(yr, "N/A")
+        hba      = nat_hba.get(yr, "N/A")
+        retail   = nat_retail_ba.get(yr) or "N/A"
+
+        # HBA share of total BA
+        hba_pct = (
+            f"{round((hba / ba) * 100, 1)}%"
+            if isinstance(ba, int) and isinstance(hba, int) and ba > 0
+            else "N/A"
+        )
+        # Retail share of total BA
+        retail_pct = (
+            f"{round((retail / ba) * 100, 1)}%"
+            if isinstance(ba, int) and isinstance(retail, int) and ba > 0
+            else "N/A"
+        )
+        # YoY growth (BA)
+        if i > 0:
+            prev_ba = nat_ba.get(all_hist_years[i - 1])
+            yoy_ba = (
+                f"{round(((ba - prev_ba) / prev_ba) * 100, 1)}%"
+                if isinstance(ba, int) and isinstance(prev_ba, int) and prev_ba > 0
+                else "N/A"
+            )
+        else:
+            yoy_ba = "—"
+
+        hist_rows.append([
+            yr, ba, hba, hba_pct, retail, retail_pct, yoy_ba
+        ])
+
+    hist_sheet.append_row([
+        "Year",
+        "Total Business Applications (BA)",
+        "High-Propensity Applications (HBA)",
+        "HBA as % of Total",
+        "Retail Trade Apps (NAICS 44-45)*",
+        "Retail as % of Total",
+        "YoY Growth (Total BA)",
+    ])
+    hist_sheet.append_rows(hist_rows)
+    hist_sheet.append_row([
+        "*NAICS 44-45 = all Retail Trade (physical + e-commerce). No e-commerce-only "
+        "filter exists in Census BFS national data — NAICS 454 is not published separately."
+    ])
+    print(f"  National historical written for {len(hist_rows)} years "
+          f"({min(all_hist_years)}–{max(all_hist_years)}).")
+
+except Exception as e:
+    print(f"  National historical error: {e}")
 
 print(f"\nRun complete — {date.today()}")
